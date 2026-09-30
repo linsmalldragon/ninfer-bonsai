@@ -117,6 +117,8 @@ docker build -f /path/to/ninfer-bonsai/Dockerfile \
 
 **发布的镜像一张支持 RTX 3090 / 4090 / 5090**:CI 传 `CMAKE_CUDA_ARCHITECTURES=86;89;120a`
 (sm_86/sm_89/sm_120a 三个 cubin 打进同一个 fat binary),而本地构建默认仍只编 `120a`。
+引擎 CMake 的架构 guard 只接受单架构,Dockerfile 在多架构 ARG 下用一行 sed 放宽该 guard
+正则(纯构建校验改动,内核源码不动;120a 的 cubin 与单架构构建逐位一致)。
 
 一次性准备:
 

@@ -7,6 +7,10 @@
 # default 86 and would refuse this artifact on a 5090. CMAKE_CUDA_ARCHITECTURES
 # is an ARG: local builds default to 120a (5090 only); the CI build passes
 # 86;89;120a so the published image also runs on RTX 3090 / 4090.
+# The pinned engine's CMake guard admits a single arch only, so a multi-arch
+# ARG also relaxes that guard's regex with a one-line sed - a build-metadata
+# change only; kernel sources are untouched and the 120a cubin stays
+# identical to a solo-120a build.
 
 FROM nvidia/cuda:13.1.2-devel-ubuntu24.04 AS build
 
@@ -43,9 +47,18 @@ COPY . .
 # only ~40 GB usable RAM (SGLang is running), and heavy concurrent nvcc+ptxas
 # frontends would risk OOM. CI (4-core / 16 GB runner) passes 4. Split-
 # compile keeps ptxas off the critical path.
+# The pinned engine's CMakeLists refuses any multi-arch value ("NInfer
+# supports CMAKE_CUDA_ARCHITECTURES=80, 86, 89 or 120a"). For the fat-binary
+# list the guard's regex is widened to admit exactly 86;89;120a before the
+# hash gate, so the configuration hash covers the patched tree and solo vs
+# multi builds never share a build dir. Only the guard changes - same
+# sources, same NINFER_SM8X_COMPAT compatibility path, same per-arch cubins.
 RUN --mount=type=cache,id=ninfer-build-120a,target=/build,sharing=locked \
     --mount=type=cache,target=/ccache \
     export CCACHE_DIR=/ccache CCACHE_MAXSIZE=${NINFER_CCACHE_MAXSIZE} \
+    && if [ "${CMAKE_CUDA_ARCHITECTURES}" = "86;89;120a" ]; then
+      sed -i 's/\^(80|86|89|120a)\$"/^(80|86|89|120a|86;89;120a)$"/' CMakeLists.txt
+    fi \
     && find . -type f \( -path ./Dockerfile -o -name CMakeLists.txt -o -name '*.cmake' \) \
         -exec sha256sum {} + > /build/configuration \
     && dpkg-query -W >> /build/configuration \
