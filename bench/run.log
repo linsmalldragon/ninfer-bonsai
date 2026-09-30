@@ -1,0 +1,28 @@
+RESTART C=1
+READY
+POINT 64k C=1 r0 wall=13s agg_decode=40.8tok/s total=5156.3tok/s ttft_med=11203.179796ms prefill=5729.891081719456 decode=387.5811546774679tok/s ok=1/1
+POINT 64k C=1 r1 wall=13s agg_decode=39.6tok/s total=5009.4tok/s ttft_med=11225.084496ms prefill=5717.284357446854 decode=307.62655313016216tok/s ok=1/1
+POINT 128k C=1 r0 wall=30s agg_decode=10.1tok/s total=4340.9tok/s ttft_med=28568.783064000003ms prefill=4529.4543946836975 decode=239.1094043109354tok/s ok=1/1
+POINT 128k C=1 r1 wall=29s agg_decode=3.8tok/s total=4459.5tok/s ttft_med=28610.661306ms prefill=4520.5176705537 decode=308.2493327271549tok/s ok=1/1
+POINT 256k C=1 r0 wall=84s agg_decode=6.1tok/s total=3107.6tok/s ttft_med=81362.937738ms prefill=3198.6676886969217 decode=209.05808926566118tok/s ok=1/1
+POINT 256k C=1 r1 wall=82s agg_decode=1.1tok/s total=3157.8tok/s ttft_med=81687.865504ms prefill=3185.613902315241 decode=145.10133531065236tok/s ok=1/1
+SOAK  256k C=1 r100 wall=83s agg_decode=4.4tok/s total=3139.4tok/s ttft_med=81437.52033500001ms prefill=3195.590913493891 decode=248.62480562367952tok/s ok=1/1
+SOAK  256k C=1 r101 wall=84s agg_decode=6.1tok/s total=3112.2tok/s ttft_med=81287.96282ms prefill=3201.3719002436674 decode=214.01373182045225tok/s ok=1/1
+SOAK  256k C=1 r102 wall=83s agg_decode=6.1tok/s total=3130.8tok/s ttft_med=81185.469775ms prefill=3205.573617067858 decode=256.18636618622924tok/s ok=1/1
+RESTART C=2
+READY
+POINT 64k C=2 r0 wall=25s agg_decode=37.3tok/s total=5247.5tok/s ttft_med=11887.238218ms prefill=5710.486095045887 decode=277.1629851069808tok/s ok=2/2
+POINT 64k C=2 r1 wall=24s agg_decode=24.6tok/s total=5348.8tok/s ttft_med=11881.047335ms prefill=5703.691104725379 decode=211.61510096318077tok/s ok=2/2
+POINT 128k C=2 r0 wall=59s agg_decode=7.1tok/s total=4385.9tok/s ttft_med=29736.330420000002ms prefill=4520.217565399731 decode=199.53643051805886tok/s ok=2/2
+POINT 128k C=2 r1 wall=60s agg_decode=13.3tok/s total=4311.2tok/s ttft_med=30015.412646ms prefill=4515.933339264079 decode=209.68897529847652tok/s ok=2/2
+SOAK  128k C=2 r100 wall=60s agg_decode=13.3tok/s total=4319.4tok/s ttft_med=29640.096287ms prefill=4516.143161127238 decode=275.28315765296503tok/s ok=2/2
+SOAK  128k C=2 r101 wall=60s agg_decode=12.8tok/s total=4338.1tok/s ttft_med=29846.248642ms prefill=4527.1040890366085 decode=204.80652301889094tok/s ok=2/2
+SOAK  128k C=2 r102 wall=58s agg_decode=6.5tok/s total=4429.6tok/s ttft_med=28778.077159999997ms prefill=4533.907653970256 decode=303.75644117592105tok/s ok=2/2
+RESTART C=4
+READY
+POINT 64k C=4 r0 wall=48s agg_decode=21.2tok/s total=5330.9tok/s ttft_med=12052.399715ms prefill=5409.140773293919 decode=17.887446501342314tok/s ok=4/4
+POINT 64k C=4 r1 wall=49s agg_decode=35.2tok/s total=5251.2tok/s ttft_med=12192.501317ms prefill=5381.832332396819 decode=31.50686187291448tok/s ok=4/4
+SOAK  64k C=4 r100 wall=49s agg_decode=32.7tok/s total=5276.0tok/s ttft_med=12201.064793000001ms prefill=5385.463903598924 decode=31.556128295373632tok/s ok=4/4
+SOAK  64k C=4 r101 wall=50s agg_decode=41.2tok/s total=5204.8tok/s ttft_med=12209.452835ms prefill=5401.638454887983 decode=36.8315492057259tok/s ok=4/4
+SOAK  64k C=4 r102 wall=48s agg_decode=21.0tok/s total=5372.2tok/s ttft_med=11807.704905999999ms prefill=5700.251383898025 decode=45.07107308219288tok/s ok=4/4
+DONE

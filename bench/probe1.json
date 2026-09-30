@@ -1,0 +1,2 @@
+{"model":"bonsai2-27b","reasoning_effort":"none","max_completion_tokens":64,
+ "messages":[{"role":"user","content":"Count from 1 to 20. Then write a short paragraph about the number 7."}]}

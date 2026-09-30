@@ -1,0 +1,9 @@
+# 8.87 GiB model artifact + hardlinks — download from HuggingFace instead (see README)
+model/
+# pinned NInfer-all source checkout (clone at the pinned commit, see README)
+src/
+# local build log & scratch
+build.log
+vision_test.json
+vision_test.png
+__pycache__/
