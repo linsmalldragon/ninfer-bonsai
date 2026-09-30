@@ -57,7 +57,7 @@ src/         # (git-ignored) ninfer-all @ 2172a598 的 git 检出,作为 docker 
 | `KV_CAPACITY` | `$MAX_CONTEXT` | KV 池容量 |
 | `KV_DTYPE` | `rk4v4` | KV 编码(17.5 KiB/token) |
 | `SPEC` / `DRAFT_TOKENS` | `dflash2` / `5` | 投机解码器 / draft 数 |
-| `EXTRA_ARGS` | (空) | 追加给引擎的参数(`--rope-yarn`、`--vision ...` 等) |
+| `EXTRA_ARGS` | (空) | 追加给引擎的参数(`--rope-yarn`、`--vision ...`、`--structured-output` 等) |
 
 ### 快速上手
 
@@ -126,6 +126,7 @@ cd <下载目录> && sha256sum -c SHA256SUMS
 | 投机解码 | `dflash2`,5 drafts(镜像默认) | 接受率随上下文深度/并发压力下降(33–68%) |
 | 视觉 | `--vision --vision-residency overlay --vision-max-merged 12288` | 塔驻留 host 内存,显存成本仅 0.03 GiB;每次编码临时借用输出头/词表/drafter 的显存,用后归还 |
 | 默认输出上限 | `--default-max-tokens 32768` | 仅约束**未带** `max_tokens` 的请求;显式 `max_tokens`(含 `-1` 无上限)照单生效 |
+| 结构化输出 | `--structured-output` | 请求可带 `response_format`(`json_object` / `json_schema`),XGrammar 语法约束;见 [API 使用](#api-使用) |
 | 显存占用 | 运行时 ~15.9 GiB,空闲 ~7.4 GiB | KV 池 14,080/14,080 pages;262K 窗口时 ~13.7 GiB |
 | 并发 | 引擎默认单 slot(`/props` `total_slots=1`) | 压测结论 C=1 聚合吞吐最大,见性能参考 |
 | API | `http://<host>:8080/v1` | `/chat/completions`、`/responses`、`/v1/messages`(Anthropic 风格)、`/v1/models`、`/props`、`/metrics`、`/slots` |
@@ -155,7 +156,7 @@ GPU=1 HOST_PORT=8081 ./run.sh # 换卡 / 换端口
 |---|---|---|
 | `MAX_CONTEXT` | `901120` | 上下文窗口(token)——覆盖镜像默认的 262144 |
 | `KV_CAPACITY` | `$MAX_CONTEXT` | KV 池容量 |
-| `EXTRA_ARGS` | `--rope-yarn --vision --vision-residency overlay --vision-max-merged 12288 --default-max-tokens 32768` | 追加给引擎的参数 |
+| `EXTRA_ARGS` | `--rope-yarn --vision --vision-residency overlay --vision-max-merged 12288 --default-max-tokens 32768 --structured-output` | 追加给引擎的参数 |
 | `KV_DTYPE` / `SPEC` / `DRAFT_TOKENS` | 不设 → 镜像默认 `rk4v4` / `dflash2` / `5` | 需要时才覆盖 |
 | `MODEL_ID` / `HOST` / `PORT` | 不设 → 镜像默认 `bonsai2-27b` / `0.0.0.0` / `8080` | |
 | `GPU` / `HOST_PORT` / `IMAGE` / `NAME` | `0` / `8080` / `ninfer-bonsai2-27b:sm120a-2172a598` / `bonsai2-27b-ninfer` | run.sh 自身 |
@@ -242,11 +243,29 @@ curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/
     {"type":"text","text":"Describe this image precisely."},
     {"type":"image_url","image_url":{"url":"data:image/png;base64,<B64>"}}
   ]}]}'
+
+# 结构化输出:response_format 为 json_object(任意合法 JSON)或 json_schema(按给定 schema)
+curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/json' -d '{
+  "model":"bonsai2-27b",
+  "messages":[{"role":"user","content":"用 JSON 列出北京三件春季美食,字段 name(菜名)与 reason(理由)"}],
+  "response_format":{"type":"json_schema","json_schema":{"name":"foods","strict":true,"schema":{
+    "type":"object",
+    "properties":{"foods":{"type":"array","items":{
+      "type":"object",
+      "properties":{"name":{"type":"string"},"reason":{"type":"string"}},
+      "required":["name","reason"],"additionalProperties":false}}},
+    "required":["foods"],"additionalProperties":false}}},
+  "max_tokens": 1024
+}'
 ```
 
 - **thinking 默认开启**:响应会带 `reasoning_content`,推理 token 计入 `max_tokens`。
   短答案场景(如视觉描述)小 `max_tokens` 会被推理吃掉,`content` 为空、finish 为 `length`——
   给足(≥4096)或关掉 thinking。
+- **结构化输出**(`response_format`:`json_object` / `json_schema`):服务端必须以
+  `--structured-output` 启动,否则请求直接报错;本仓库 `run.sh` 的默认 `EXTRA_ARGS` 已带。
+  带 schema 的请求由 XGrammar 编译约束、每个 DFlash 轮加一个语法 mask 阶段;
+  Docker Hub 镜像默认**未**开启,需要时 `-e EXTRA_ARGS="--structured-output"`(与其余参数拼一起)。
 - `/props`:运行时属性(`n_ctx`、`n_predict`、`total_slots`、模态)。`/metrics`:Prometheus 风格统计;
   `/slots`:llama.cpp 风格 lane 表。
 - 无音频输入/输出(引擎无音频管线,产物也无音频塔);需要语音就前置 ASR 转文本。

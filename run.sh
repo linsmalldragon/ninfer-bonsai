@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Start the Ternary-Bonsai-2-27B NInfer server (901,120-token window with
 # --rope-yarn, rk4v4 KV, DFlash2 drafter, vision tower in overlay residency,
-# 32k default output cap) on one RTX 5090. The model artifact is hard-linked
+# 32k default output cap, --structured-output for response_format
+# json_object/json_schema) on one RTX 5090. The model artifact is hard-linked
 # from the local HuggingFace cache into ./model and mounted read-only; nothing
 # is baked into the image.
 #
@@ -43,7 +44,7 @@ fi
 MAX_CONTEXT="${MAX_CONTEXT:-901120}"
 KV_CAPACITY="${KV_CAPACITY:-$MAX_CONTEXT}"
 if [ -z "${EXTRA_ARGS:-}" ]; then
-  EXTRA_ARGS="--rope-yarn --vision --vision-residency overlay --vision-max-merged 12288 --default-max-tokens 32768"
+  EXTRA_ARGS="--rope-yarn --vision --vision-residency overlay --vision-max-merged 12288 --default-max-tokens 32768 --structured-output"
 fi
 
 # Tunables: MAX_CONTEXT, KV_CAPACITY, KV_DTYPE, SPEC, DRAFT_TOKENS,
