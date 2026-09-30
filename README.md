@@ -48,18 +48,28 @@ src/         # (git-ignored) ninfer-all @ 2172a598 的 git 检出,作为 docker 
 
 ## 获取模型(不在此仓库)
 
-模型在 HuggingFace 公开仓库(无需门禁,license: apache-2.0):
+模型在 HuggingFace 公开仓库(**公开且无门禁,匿名即可下载**,license: apache-2.0):
 
 <https://huggingface.co/WaveCut/Ternary-Bonsai-2-27B-NInfer-v3>
 
 ```bash
+# 一次性:安装下载 CLI
 pip install -U huggingface_hub
+
+# 方式 1(推荐):下到 HF 缓存默认位置,run.sh 的硬链接逻辑会自动把它接进 ./model/
 huggingface-cli download WaveCut/Ternary-Bonsai-2-27B-NInfer-v3
-# 新版的 CLI 也写作:  hf download WaveCut/Ternary-Bonsai-2-27B-NInfer-v3
+# (新版 huggingface_hub 的 CLI 也写作:  hf download WaveCut/Ternary-Bonsai-2-27B-NInfer-v3)
+# 文件落在 ~/.cache/huggingface/hub/models--WaveCut--Ternary-Bonsai-2-27B-NInfer-v3/snapshots/<snap>/
+
+# 方式 2:直接下到 run.sh 的挂载目录(不依赖 HF 缓存布局,机器上没有缓存也能跑)
+huggingface-cli download WaveCut/Ternary-Bonsai-2-27B-NInfer-v3 --local-dir /root/ninfer-bonsai/model
+
+# 校验(下载的 SHA256SUMS 列出了全部文件的哈希)
+cd <下载目录> && sha256sum -c SHA256SUMS
 ```
 
 产物为 `Ternary-Bonsai-2-27B-ninfer-v3.ninfer`(9,520,051,456 字节,8.87 GiB),同目录附
-`SHA256SUMS`、`SHA256SUMS` 之外的转换报告(`.conversion.json`)与 `NOTICE`。
+`SHA256SUMS`、转换报告(`.conversion.json`)与 `NOTICE`。
 
 `run.sh` 从默认 HF 缓存布局取文件并硬链接进 `./model/`(同文件系统,零拷贝):
 
