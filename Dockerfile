@@ -56,8 +56,8 @@ COPY . .
 RUN --mount=type=cache,id=ninfer-build-120a,target=/build,sharing=locked \
     --mount=type=cache,target=/ccache \
     export CCACHE_DIR=/ccache CCACHE_MAXSIZE=${NINFER_CCACHE_MAXSIZE} \
-    && if [ "${CMAKE_CUDA_ARCHITECTURES}" = "86;89;120a" ]; then
-      sed -i 's/\^(80|86|89|120a)\$"/^(80|86|89|120a|86;89;120a)$"/' CMakeLists.txt
+    && if [ "${CMAKE_CUDA_ARCHITECTURES}" = "86;89;120a" ]; then \
+      sed -i 's/\^(80|86|89|120a)\$"/^(80|86|89|120a|86;89;120a)$"/' CMakeLists.txt; \
     fi \
     && find . -type f \( -path ./Dockerfile -o -name CMakeLists.txt -o -name '*.cmake' \) \
         -exec sha256sum {} + > /build/configuration \
