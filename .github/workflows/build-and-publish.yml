@@ -1,37 +1,31 @@
-# Build NInfer-all at the pinned commit and publish to Docker Hub.
-#
-# One-time setup (repo Settings -> Secrets and variables -> Actions):
-#   DOCKERHUB_USERNAME  Docker Hub namespace (linsmalldragon)
-#   DOCKERHUB_TOKEN     Docker Hub access token with write scope
-#                       (docker.io -> Account Settings -> Security -> Access Tokens)
-#
-# Resulting image (one fat binary, sm_86 + sm_89 + sm_120a):
-#   linsmalldragon/ninfer-bonsai:sm86-sm89-sm120a-<pin-sha8>  and  :latest
-# Runs on RTX 3090 / 4090 / 5090. The model artifact is NOT in the image;
-# download it from HuggingFace and mount it at /workspace (see README).
-#
-# Triggers: push to main touching Dockerfile / ninfer-all.sha / this file,
-# or manual (Actions -> Run workflow), with an optional pin override.
-#
-# Cost note: public repos get 2,000 free runner-minutes/month; a cold
-# 3-arch compile on a 4-core runner takes a few hours, so budget a handful
-# of builds per month on the free tier.
-
 name: build-and-publish
 
+# Build NInfer-all at the pinned commit (ninfer-all.sha) and publish the
+# runtime image to Docker Hub as
+#   <DOCKERHUB_USERNAME>/ninfer-bonsai:sm86-sm89-sm120a-<pin-sha8>  +  :latest
+# One fat binary (sm_86 + sm_89 + sm_120a) => runs on RTX 3090 / 4090 / 5090.
+# The model artifact is NOT in the image; mount it at /workspace at runtime.
+#
+# Required repo secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
+#
+# Cost note: public repos get 2,000 free runner-minutes/month; a cold 3-arch
+# compile on 4 cores takes ~2-4 h, so budget ~4-8 builds/month on the free
+# tier. Re-running with no changes is cheap: base layers cache on the runner
+# image cache and the build is a full compile only when sources/flags move.
+
 on:
-  workflow_dispatch:
-    inputs:
-      pin_sha:
-        description: "NInfer-all commit to build (default: contents of ninfer-all.sha)"
-        required: false
-        default: ""
   push:
     branches: [main]
     paths:
       - Dockerfile
       - ninfer-all.sha
       - .github/workflows/build-and-publish.yml
+  workflow_dispatch:
+    inputs:
+      pin_sha:
+        description: "NInfer-all commit to build (default: contents of ninfer-all.sha)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -40,59 +34,60 @@ jobs:
   build-and-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 355
+    # Job-level env: no step's run body references secrets directly;
+    # masking stays automatic everywhere.
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve NInfer-all pin
+      - name: Check Docker Hub credentials
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error::Repo secrets DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not set. Add them under Settings -> Secrets and variables -> Actions (Docker Hub access token with Write scope), then re-run."
+            exit 1
+          fi
+
+      - name: Resolve pinned NInfer-all commit
         id: pin
         run: |
-          pin="$(tr -d '[:space:]' < ninfer-all.sha)"
-          if [ -n "${{ github.event.inputs.pin_sha || '' }}" ]; then
-            pin="${{ github.event.inputs.pin_sha }}"
+          sha="${{ github.event.inputs.pin_sha }}"
+          if [ -z "$sha" ]; then
+            sha="$(tr -d '[:space:]' < ninfer-all.sha)"
           fi
-          case "$pin" in
-            *[!0-9a-fA-F]*) echo "::error::invalid pin: $pin"; exit 1 ;;
-          esac
-          echo "sha=$pin" >> "$GITHUB_OUTPUT"
-          echo "short=${pin:0:8}" >> "$GITHUB_OUTPUT"
-          echo "Building NInfer-all @ $pin (tag sm86-sm89-sm120a-${pin:0:8})"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:8}" >> "$GITHUB_OUTPUT"
+          echo "Building NInfer-all @ ${sha:0:8} -> tag sm86-sm89-sm120a-${sha:0:8}"
 
       - name: Fetch NInfer-all source (docker build context)
         run: |
           git clone https://github.com/iamwavecut/ninfer-all ninfer-all
-          sha="${{ steps.pin.outputs.sha }}"
-          git -C ninfer-all checkout "$sha" 2>/dev/null \
-            || { git -C ninfer-all fetch origin "$sha" && git -C ninfer-all checkout "$sha"; }
+          git -C ninfer-all checkout "${{ steps.pin.outputs.sha }}" 2>/dev/null \
+            || { git -C ninfer-all fetch origin "${{ steps.pin.outputs.sha }}" && git -C ninfer-all checkout "${{ steps.pin.outputs.sha }}"; }
           git -C ninfer-all log --oneline -1
-
-      - name: Check Docker Hub credentials
-        run: |
-          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
-            echo "::error::Set the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets first."
-            exit 1
-          fi
 
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
         with:
-          registry: docker.io
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
 
-      - name: Build and push (sm_86 + sm_89 + sm_120a, one image for 3090/4090/5090)
+      - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: ./ninfer-all
-          file: ./Dockerfile
+          file: Dockerfile
           build-args: |
             CMAKE_CUDA_ARCHITECTURES=86;89;120a
             NINFER_BUILD_PARALLEL=4
             NINFER_CCACHE_MAXSIZE=4G
           tags: |
-            linsmalldragon/ninfer-bonsai:sm86-sm89-sm120a-${{ steps.pin.outputs.short }}
-            linsmalldragon/ninfer-bonsai:latest
+            ${{ env.DOCKERHUB_USERNAME }}/ninfer-bonsai:sm86-sm89-sm120a-${{ steps.pin.outputs.short }}
+            ${{ env.DOCKERHUB_USERNAME }}/ninfer-bonsai:latest
           push: true
+
+      - name: Report image
+        run: |
+          echo "::notice::Published ${DOCKERHUB_USERNAME}/ninfer-bonsai:sm86-sm89-sm120a-${{ steps.pin.outputs.short }} (also :latest). docker pull, mount the HuggingFace .ninfer at /workspace, run."
