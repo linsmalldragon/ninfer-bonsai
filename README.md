@@ -2,49 +2,84 @@
 
 > **English TL;DR** — Docker deployment that serves the
 > [Ternary-Bonsai-2-27B NInfer-v3](https://huggingface.co/WaveCut/Ternary-Bonsai-2-27B-NInfer-v3)
-> ternary 27B model (Qwen3.8-27B base, text + vision) on **one RTX 5090** with the
-> [NInfer-all](https://github.com/iamwavecut/ninfer-all) engine: 880K-token context, DFlash2
-> speculative decoding, OpenAI-compatible API.
+> ternary 27B model (Qwen3.8-27B base, text + vision) on **one RTX 3090 / 4090 / 5090** with the
+> [NInfer-all](https://github.com/iamwavecut/ninfer-all) engine: up to 880K-token context on a
+> 32 GiB card (5090), DFlash2 speculative decoding, OpenAI-compatible API.
 
-在单张 RTX 5090(32 GiB)上,用 [NInfer-all](https://github.com/iamwavecut/ninfer-all) 引擎以 Docker 方式服务
+在单张 NVIDIA 卡上,用 [NInfer-all](https://github.com/iamwavecut/ninfer-all) 引擎以 Docker 方式服务
 [Ternary-Bonsai-2-27B NInfer-v3](https://huggingface.co/WaveCut/Ternary-Bonsai-2-27B-NInfer-v3)
 ——PrismML 的三值化 27B 模型(Qwen3.8-27B 底座),单个 8.87 GiB `.ninfer` 文件,**内置视觉塔**。
-`run.sh` 固化的部署:880K(901,120 token)上下文 + YaRN、rk4v4 KV、DFlash2 投机解码、视觉 overlay
-驻留、32k 默认输出上限,OpenAI 兼容 API。
 
-模型本身不进 git;NInfer-all 源码(第三方)也不进 git,README 里写清了从哪里取。
+- **RTX 5090(32 GiB)**:本仓库 `run.sh` 固化的部署——880K(901,120 token)上下文 + YaRN、
+  rk4v4 KV、DFlash2 投机解码、视觉 overlay 驻留、32k 默认输出上限,OpenAI 兼容 API。
+- **RTX 3090 / 4090(24 GiB)**:用镜像自带的 256K 默认窗口(显存放不下 880K,见下)。
+
+模型本身不进 git;NInfer-all 源码(第三方)也不进 git,README 写清了从哪里取。
 
 ## 目录结构
 
 ```
-Dockerfile   # 两阶段构建:NInfer-all@2172a598 源码(sm_120a 编译)→ 运行时镜像(entrypoint + 全部 env 默认值)
-run.sh       # 一键启动:模型硬链接、880K 部署默认值、unless-stopped 重启策略
+Dockerfile   # 两阶段构建:NInfer-all@2172a598 源码 → 运行时镜像(entrypoint + 全部 env 默认值)
+run.sh       # 一键启动(本仓库 5090 部署):模型硬链接、880K 部署默认值、unless-stopped 重启策略
 bench/       # 压测脚本与结果(C=1/2/4 全上下文、C=4×128k KV 超订、诊断工具、引擎日志摘录)
 model/       # (git-ignored) HF 缓存中 .ninfer 的硬链接目录,只读挂载进容器
 src/         # (git-ignored) ninfer-all @ 2172a598 的 git 检出,作为 docker build 的 context
 ```
 
-## 部署规格(本仓库默认)
+## Docker 镜像
 
-| 项 | 值 | 说明 |
+产物是 Docker Hub 上的镜像,**一个 fat binary 覆盖三种卡**:
+
+| Tag | 含义 |
+|---|---|
+| `linsmalldragon/ninfer-bonsai:sm86-sm89-sm120a-<sha8>` | sm_86(RTX 3090)+ sm_89(RTX 4090)+ sm_120a(RTX 5090);`<sha8>` 是所钉 NInfer-all commit 的前 8 位 |
+| `linsmalldragon/ninfer-bonsai:latest` | 与上面同一个二进制,始终指向最近一次发布的构建 |
+
+- **一张镜像跑 RTX 3090 / 4090 / 5090**:CI 以 `CMAKE_CUDA_ARCHITECTURES=86;89;120a` 编译,
+  三个 cubin 打进同一个二进制(引擎 CMake 的架构 guard 只接受单架构,Dockerfile 在多架构 ARG
+  下用一行 sed 放宽该 guard 正则——纯构建校验改动,内核源码不动,120a 的 cubin 与单架构构建
+  逐位一致)。本地构建默认仍只编 `120a`(5090-only)。
+- **镜像不含模型**:只有 NInfer-all 引擎二进制 + `entrypoint` + 全部 env 默认值。`.ninfer`
+  要从 HuggingFace 下载(见 [获取模型](#获取模型不在此仓库))并挂载到 `/workspace`。
+- 运行时坑已在构建期处理:CUDA runtime 镜像自带的 forward-compat `libcuda` 在 GeForce 卡上
+  会让所有 CUDA 调用失败(`cudaErrorCompatNotSupportedOnDevice`),镜像构建时已删除。
+
+### 镜像 env 变量
+
+所有部署参数都可 env 覆盖,不设置时取镜像默认:
+
+| 变量 | 默认 | 说明 |
 |---|---|---|
-| 模型 | Ternary-Bonsai-2-27B NInfer-v3 | 8.87 GiB,含视觉塔;`n_params≈30.4B`,词表 151,665 |
-| 上下文窗口 | **901,120 tokens(880K)+ `--rope-yarn`** | 质量边界实测,见下 |
-| KV 编码 | `rk4v4`(镜像默认) | 17.5 KiB/token(16 层 full-attention × 4 KV 头) |
-| GDN 状态 | fp16(镜像默认) | 48 层 GDN 线性注意力 |
-| 投机解码 | `dflash2`,5 drafts(镜像默认) | 接受率随上下文深度/并发压力下降(33–68%) |
-| 视觉 | `--vision --vision-residency overlay --vision-max-merged 12288` | 塔驻留 host 内存,显存成本仅 0.03 GiB;每次编码临时借用输出头/词表/drafter 的显存,用后归还 |
-| 默认输出上限 | `--default-max-tokens 32768` | 仅约束**未带** `max_tokens` 的请求;显式 `max_tokens`(含 `-1` 无上限)照单生效 |
-| 显存占用 | 运行时 ~15.9 GiB,空闲 ~7.4 GiB | KV 池 14,080/14,080 pages;262K 窗口时 ~13.7 GiB |
-| 并发 | 引擎默认单 slot(`/props` `total_slots=1`) | 压测结论 C=1 聚合吞吐最大,见性能参考 |
-| API | `http://<host>:8080/v1` | `/chat/completions`、`/responses`、`/v1/messages`(Anthropic 风格)、`/v1/models`、`/props`、`/metrics`、`/slots` |
+| `MODEL_PATH` | `/workspace/Ternary-Bonsai-2-27B-ninfer-v3.ninfer` | 要服务的 `.ninfer`(即挂载落点) |
+| `MODEL_ID` | `bonsai2-27b` | API 的 model id |
+| `HOST` / `PORT` | `0.0.0.0` / `8080` | 监听地址 / 端口 |
+| `MAX_CONTEXT` | `262144` | 上下文窗口(token);默认即 256K |
+| `KV_CAPACITY` | `$MAX_CONTEXT` | KV 池容量 |
+| `KV_DTYPE` | `rk4v4` | KV 编码(17.5 KiB/token) |
+| `SPEC` / `DRAFT_TOKENS` | `dflash2` / `5` | 投机解码器 / draft 数 |
+| `EXTRA_ARGS` | (空) | 追加给引擎的参数(`--rope-yarn`、`--vision ...` 等) |
 
-**为什么是 880K 而不是 1M:** 模型卡针测的结论是检索质量按**位置**衰减而不是按窗口大小——
-978,944 窗口内 33/66/90% 位置的全部针都能取回;1,048,576 时 90% 位置的针(≈943K)取不回来
-(无论是否 `--rope-yarn`)。本部署取 901,120(880×1024,最浅于 881K 已验证可用的边界),
-1M 的 ~20K token 余量换来的是确定的检索退化,弃之。想回 256K 全窗口:`MAX_CONTEXT=262144 EXTRA_ARGS=""`
-(并去掉 rope-yarn);想开 1M:`MAX_CONTEXT=KV_CAPACITY=1048576` + `EXTRA_ARGS="--rope-yarn"`
-(显存够,质量风险自担)。
+### 快速上手
+
+```bash
+docker pull linsmalldragon/ninfer-bonsai:latest
+
+# 3090 / 4090(24 GiB):用镜像自带默认(256K 窗口, rk4v4, dflash2)
+docker run -d --name bonsai2-27b --gpus device=0 -p 8080:8080 \
+  -v /path/to/model:/workspace:ro \
+  linsmalldragon/ninfer-bonsai:latest
+
+# 5090(32 GiB):按本仓库 run.sh 的 880K 部署
+docker run -d --name bonsai2-27b --gpus device=0 -p 8080:8080 \
+  -v /path/to/model:/workspace:ro \
+  -e MAX_CONTEXT=901120 -e KV_CAPACITY=901120 \
+  -e EXTRA_ARGS="--rope-yarn --vision --vision-residency overlay --vision-max-merged 12288 --default-max-tokens 32768" \
+  linsmalldragon/ninfer-bonsai:latest
+```
+
+**24 GiB 卡(3090/4090)不要套用 880K 默认**:KV 池(rk4v4,17.5 KiB/token)880K ≈ 15.4 GiB,
+加上模型权重 ~9 GiB 会超显存;用默认的 256K 窗口(或按卡显存自定 `MAX_CONTEXT` / `KV_CAPACITY`)。
+需要视觉的加 `-e EXTRA_ARGS="--vision --vision-residency overlay --vision-max-merged 12288"`。
 
 ## 获取模型(不在此仓库)
 
@@ -80,7 +115,70 @@ cd <下载目录> && sha256sum -c SHA256SUMS
 模型血缘:prism-ml/Ternary-Bonsai-2-27B-gguf(三值化底座)+ ProCreations 的 MTP 头与 DFlash2
 适配器 merge 而成,视觉塔为原版 Qwen3.8-27B mmproj。
 
-## 构建镜像
+## 部署规格(5090 默认)
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| 模型 | Ternary-Bonsai-2-27B NInfer-v3 | 8.87 GiB,含视觉塔;`n_params≈30.4B`,词表 151,665 |
+| 上下文窗口 | **901,120 tokens(880K)+ `--rope-yarn`** | 质量边界实测,见下 |
+| KV 编码 | `rk4v4`(镜像默认) | 17.5 KiB/token(16 层 full-attention × 4 KV 头) |
+| GDN 状态 | fp16(镜像默认) | 48 层 GDN 线性注意力 |
+| 投机解码 | `dflash2`,5 drafts(镜像默认) | 接受率随上下文深度/并发压力下降(33–68%) |
+| 视觉 | `--vision --vision-residency overlay --vision-max-merged 12288` | 塔驻留 host 内存,显存成本仅 0.03 GiB;每次编码临时借用输出头/词表/drafter 的显存,用后归还 |
+| 默认输出上限 | `--default-max-tokens 32768` | 仅约束**未带** `max_tokens` 的请求;显式 `max_tokens`(含 `-1` 无上限)照单生效 |
+| 显存占用 | 运行时 ~15.9 GiB,空闲 ~7.4 GiB | KV 池 14,080/14,080 pages;262K 窗口时 ~13.7 GiB |
+| 并发 | 引擎默认单 slot(`/props` `total_slots=1`) | 压测结论 C=1 聚合吞吐最大,见性能参考 |
+| API | `http://<host>:8080/v1` | `/chat/completions`、`/responses`、`/v1/messages`(Anthropic 风格)、`/v1/models`、`/props`、`/metrics`、`/slots` |
+
+**为什么是 880K 而不是 1M:** 模型卡针测的结论是检索质量按**位置**衰减而不是按窗口大小——
+978,944 窗口内 33/66/90% 位置的全部针都能取回;1,048,576 时 90% 位置的针(≈943K)取不回来
+(无论是否 `--rope-yarn`)。本部署取 901,120(880×1024,最浅于 881K 已验证可用的边界),
+1M 的 ~20K token 余量换来的是确定的检索退化,弃之。想回 256K 全窗口:`MAX_CONTEXT=262144 EXTRA_ARGS=""`
+(并去掉 rope-yarn);想开 1M:`MAX_CONTEXT=KV_CAPACITY=1048576` + `EXTRA_ARGS="--rope-yarn"`
+(显存够,质量风险自担)。
+
+## 运行
+
+### 本仓库一键 `run.sh`(5090 宿主)
+
+```bash
+./run.sh                      # 后台,GPU0,宿主端口 8080
+GPU=1 HOST_PORT=8081 ./run.sh # 换卡 / 换端口
+./run.sh --foreground         # 前台附着,Ctrl-C 停
+```
+
+`run.sh` 做的事:模型硬链接 → 组装 env → `docker run -d`(带 `--restart unless-stopped`,
+宿主机重启后自动拉起)。**所有部署参数都写成了脚本默认值,同时允许环境变量覆盖**
+(`${VAR:-...}` 语义):
+
+| 变量 | 默认(本部署) | 说明 |
+|---|---|---|
+| `MAX_CONTEXT` | `901120` | 上下文窗口(token)——覆盖镜像默认的 262144 |
+| `KV_CAPACITY` | `$MAX_CONTEXT` | KV 池容量 |
+| `EXTRA_ARGS` | `--rope-yarn --vision --vision-residency overlay --vision-max-merged 12288 --default-max-tokens 32768` | 追加给引擎的参数 |
+| `KV_DTYPE` / `SPEC` / `DRAFT_TOKENS` | 不设 → 镜像默认 `rk4v4` / `dflash2` / `5` | 需要时才覆盖 |
+| `MODEL_ID` / `HOST` / `PORT` | 不设 → 镜像默认 `bonsai2-27b` / `0.0.0.0` / `8080` | |
+| `GPU` / `HOST_PORT` / `IMAGE` / `NAME` | `0` / `8080` / `ninfer-bonsai2-27b:sm120a-2172a598` / `bonsai2-27b-ninfer` | run.sh 自身 |
+
+注意:转发逻辑**只转发非空值**——`SPEC= ./run.sh` 这类空值不会传进容器,entrypoint 会退回
+默认 `dflash2`(drafter 没被关掉)。要改 drafter 请给实际值。
+
+想改用 Docker Hub 发布的镜像(而不是本地构建的),只换 `IMAGE`:
+
+```bash
+IMAGE=linsmalldragon/ninfer-bonsai:latest ./run.sh
+```
+
+启动完成后验证:
+
+```bash
+curl -s http://127.0.0.1:8080/props | python3 -m json.tool
+# n_ctx=901120, n_predict=32768, total_slots=1, modalities.vision=true
+curl -s http://127.0.0.1:8080/v1/models
+# context_window=901120, modalities.vision=true, meta.n_ctx_train=262144
+```
+
+## 本地构建镜像
 
 前置:Linux x86_64 + Docker(BuildKit)+ nvidia-container-toolkit;5090 需要支持 sm_120a /
 CUDA 13.1 的 NVIDIA 驱动(用最新 GeForce 驱动)。
@@ -103,8 +201,6 @@ docker build -f /path/to/ninfer-bonsai/Dockerfile \
 - 基础镜像(nvidia/cuda:13.1.2-devel/runtime,~3.5 GB)走国内 mirror 拉取可能要约 2 小时;
   编译本身在 `--parallel 16`(主机 RAM 上限保护)下约 30–60 分钟。BuildKit 缓存命中后
   重跑只重做变化部分。
-- 镜像里已处理一个坑:CUDA runtime 镜像自带的 forward-compat `libcuda` 在 GeForce 卡上会让
-  所有 CUDA 调用失败(`cudaErrorCompatNotSupportedOnDevice`),构建时已删除。
 
 ## GitHub Actions 自动构建并发布到 Docker Hub
 
@@ -113,12 +209,8 @@ docker build -f /path/to/ninfer-bonsai/Dockerfile \
 - **触发**:push 到 main(仅当 `Dockerfile` / `ninfer-all.sha` / 工作流文件本身变化),或手动
   Actions → Run workflow(可覆盖 NInfer-all 的 commit)。
 - **流程**:读 `ninfer-all.sha` 的钉住 commit → clone NInfer-all 到该 commit → BuildKit 构建
-  → 推送 `linsmalldragon/ninfer-bonsai:sm86-sm89-sm120a-<sha8>` 与 `:latest`。
-
-**发布的镜像一张支持 RTX 3090 / 4090 / 5090**:CI 传 `CMAKE_CUDA_ARCHITECTURES=86;89;120a`
-(sm_86/sm_89/sm_120a 三个 cubin 打进同一个 fat binary),而本地构建默认仍只编 `120a`。
-引擎 CMake 的架构 guard 只接受单架构,Dockerfile 在多架构 ARG 下用一行 sed 放宽该 guard
-正则(纯构建校验改动,内核源码不动;120a 的 cubin 与单架构构建逐位一致)。
+  (三架构,4 核 runner,ccache 4G)→ 推送 `linsmalldragon/ninfer-bonsai:sm86-sm89-sm120a-<sha8>`
+  与 `:latest`。
 
 一次性准备:
 
@@ -128,68 +220,11 @@ docker build -f /path/to/ninfer-bonsai/Dockerfile \
   - secret `DOCKERHUB_TOKEN` = docker.io 的 access token(Account Settings → Security →
     Access Tokens,勾选 write)
 
-拉取运行(镜像**不含**模型,先从 HuggingFace 下载,见"获取模型"):
-
-```bash
-docker pull linsmalldragon/ninfer-bonsai:latest
-
-# 3090 / 4090(24 GiB):用镜像自带默认(256K 窗口, rk4v4, dflash2)
-docker run -d --name bonsai2-27b --gpus device=0 -p 8080:8080 \
-  -v /path/to/model:/workspace:ro \
-  linsmalldragon/ninfer-bonsai:latest
-
-# 5090(32 GiB):按本仓库 run.sh 的 880K 部署
-docker run -d --name bonsai2-27b --gpus device=0 -p 8080:8080 \
-  -v /path/to/model:/workspace:ro \
-  -e MAX_CONTEXT=901120 -e KV_CAPACITY=901120 \
-  -e EXTRA_ARGS="--rope-yarn --vision --vision-residency overlay --vision-max-merged 12288 --default-max-tokens 32768" \
-  linsmalldragon/ninfer-bonsai:latest
-```
-
-24 GiB 卡(3090/4090)**不要**套用 880K 默认:KV 池(rk4v4,17.5 KiB/token)880K ≈ 15.4 GiB,
-加上模型权重 ~9 GiB 超显存;用默认的 256K 窗口(或按卡显存自定 `MAX_CONTEXT` / `KV_CAPACITY`)。
-需要视觉的加 `-e EXTRA_ARGS="--vision --vision-residency overlay --vision-max-merged 12288"`。
-
-本机(5090 宿主)也可以直接复用 run.sh 只换镜像:`IMAGE=linsmalldragon/ninfer-bonsai:latest ./run.sh`。
-
 升级引擎版本:改 `ninfer-all.sha` 一行并 push,镜像自动重建发布;升级后 `:latest` 与
 带 sha 的 tag 同时更新。
 
 费用提示:公开仓库每月 2000 免费 runner 分钟;4 核 runner 冷构建(无 BuildKit 缓存复用,
 三架构)约 3–5 小时,免费额度下每月约 4–5 次构建,按需触发即可。
-
-## 运行
-
-```bash
-./run.sh                      # 后台,GPU0,宿主端口 8080
-GPU=1 HOST_PORT=8081 ./run.sh # 换卡 / 换端口
-./run.sh --foreground         # 前台附着,Ctrl-C 停
-```
-
-`run.sh` 做的事:模型硬链接 → 组装 env → `docker run -d`(带 `--restart unless-stopped`,
-宿主机重启后自动拉起)。**所有部署参数都写成了脚本默认值,同时允许环境变量覆盖**
-(`${VAR:-...}` 语义):
-
-| 变量 | 默认(本部署) | 说明 |
-|---|---|---|
-| `MAX_CONTEXT` | `901120` | 上下文窗口(token) |
-| `KV_CAPACITY` | `$MAX_CONTEXT` | KV 池容量 |
-| `EXTRA_ARGS` | `--rope-yarn --vision --vision-residency overlay --vision-max-merged 12288 --default-max-tokens 32768` | 追加给引擎的参数 |
-| `KV_DTYPE` / `SPEC` / `DRAFT_TOKENS` | 不设 → 镜像默认 `rk4v4` / `dflash2` / `5` | 需要时才覆盖 |
-| `MODEL_ID` / `HOST` / `PORT` | 不设 → 镜像默认 `bonsai2-27b` / `0.0.0.0` / `8080` | |
-| `GPU` / `HOST_PORT` / `IMAGE` / `NAME` | `0` / `8080` / `ninfer-bonsai2-27b:sm120a-2172a598` / `bonsai2-27b-ninfer` | run.sh 自身 |
-
-注意:转发逻辑**只转发非空值**——`SPEC= ./run.sh` 这类空值不会传进容器,entrypoint 会退回
-默认 `dflash2`(drafter 没被关掉)。要改 drafter 请给实际值。
-
-启动完成后验证:
-
-```bash
-curl -s http://127.0.0.1:8080/props | python3 -m json.tool
-# n_ctx=901120, n_predict=32768, total_slots=1, modalities.vision=true
-curl -s http://127.0.0.1:8080/v1/models
-# context_window=901120, modalities.vision=true, meta.n_ctx_train=262144
-```
 
 ## API 使用
 
@@ -202,8 +237,8 @@ curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/
 
 # 视觉:image_url 支持 http(s) URL 或 data URI(base64 内嵌)
 curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/json' -d '{
-  "model": "bonsai2-27b",
-  "messages": [{"role":"user","content":[
+  "model":"bonsai2-27b",
+  "messages":[{"role":"user","content":[
     {"type":"text","text":"Describe this image precisely."},
     {"type":"image_url","image_url":{"url":"data:image/png;base64,<B64>"}}
   ]}]}'
