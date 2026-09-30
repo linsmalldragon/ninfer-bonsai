@@ -1,14 +1,23 @@
 # syntax=docker/dockerfile:1
 
 # NInfer-all (iamwavecut/ninfer-all @ 2172a598, the commit the Ternary-Bonsai-2-27B
-# NInfer-v3 card benchmarked) built for the RTX 5090: sm_120a runs the ternary
-# t2_g128_fp16 route on the mma.sync compatibility path that consumer Blackwell
-# needs. The repo's stock Dockerfile builds with the default 86 and would refuse
-# this artifact on a 5090.
+# NInfer-v3 card benchmarked), built for consumer GeForce Blackwell: sm_120a
+# runs the ternary t2_g128_fp16 route on the mma.sync compatibility path that
+# consumer Blackwell needs. The repo's stock Dockerfile builds with the
+# default 86 and would refuse this artifact on a 5090. CMAKE_CUDA_ARCHITECTURES
+# is an ARG: local builds default to 120a (5090 only); the CI build passes
+# 86;89;120a so the published image also runs on RTX 3090 / 4090.
 
 FROM nvidia/cuda:13.1.2-devel-ubuntu24.04 AS build
 
 ARG DEBIAN_FRONTEND=noninteractive
+# Overridable build knobs; defaults reproduce the local host build (RTX 5090).
+# CI passes CMAKE_CUDA_ARCHITECTURES=86;89;120a (one fat binary for
+# RTX 3090/4090/5090) and smaller NINFER_BUILD_PARALLEL / ccache size to fit
+# a 4-core / 16 GB runner.
+ARG CMAKE_CUDA_ARCHITECTURES=120a
+ARG NINFER_BUILD_PARALLEL=16
+ARG NINFER_CCACHE_MAXSIZE=20G
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         ccache \
@@ -30,22 +39,23 @@ COPY . .
 # versions and this build's own flags identify the configuration; removed flags
 # and changed defaults must not reuse CMakeCache.txt. Lock the mutable Ninja
 # tree and copy deliverables out of the transient cache mount.
-# --parallel is capped at 16: the host has 48 cores but only ~40 GB usable
-# RAM (SGLang is running), and heavy concurrent nvcc+ptxas frontends would
-# risk OOM. Split-compile keeps ptxas off the critical path.
+# NINFER_BUILD_PARALLEL defaults to 16: the local build host has 48 cores but
+# only ~40 GB usable RAM (SGLang is running), and heavy concurrent nvcc+ptxas
+# frontends would risk OOM. CI (4-core / 16 GB runner) passes 4. Split-
+# compile keeps ptxas off the critical path.
 RUN --mount=type=cache,id=ninfer-build-120a,target=/build,sharing=locked \
     --mount=type=cache,target=/ccache \
-    export CCACHE_DIR=/ccache CCACHE_MAXSIZE=20G \
+    export CCACHE_DIR=/ccache CCACHE_MAXSIZE=${NINFER_CCACHE_MAXSIZE} \
     && find . -type f \( -path ./Dockerfile -o -name CMakeLists.txt -o -name '*.cmake' \) \
         -exec sha256sum {} + > /build/configuration \
     && dpkg-query -W >> /build/configuration \
-    && echo "CMAKE_CUDA_ARCHITECTURES=120a NINFER_NVCC_SPLIT_COMPILE=2 PARALLEL=16" >> /build/configuration \
+    && echo "CMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES} NINFER_NVCC_SPLIT_COMPILE=2 PARALLEL=${NINFER_BUILD_PARALLEL} CCACHE=${NINFER_CCACHE_MAXSIZE}" >> /build/configuration \
     && LC_ALL=C sort -o /build/configuration /build/configuration \
     && build_dir="/build/$(sha256sum /build/configuration | cut -d ' ' -f 1)" \
     && rsync --recursive --links --checksum --delete /src/ /build/src/ \
     && cmake -S /build/src -B "$build_dir" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_CUDA_ARCHITECTURES=120a \
+        -DCMAKE_CUDA_ARCHITECTURES="${CMAKE_CUDA_ARCHITECTURES}" \
         -DNINFER_NVCC_SPLIT_COMPILE=2 \
         -DCMAKE_C_COMPILER_LAUNCHER=ccache \
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -53,7 +63,7 @@ RUN --mount=type=cache,id=ninfer-build-120a,target=/build,sharing=locked \
         -DNINFER_BUILD_APPS=ON \
         -DBUILD_TESTING=OFF \
         -DNINFER_BUILD_BENCHMARKS=OFF \
-    && cmake --build "$build_dir" --parallel 16 --target ninfer ninfer-serve \
+    && cmake --build "$build_dir" --parallel ${NINFER_BUILD_PARALLEL} --target ninfer ninfer-serve \
     && mkdir -p /out \
     && cp "$build_dir/apps/ninfer" "$build_dir/apps/ninfer-serve" /out/ \
     && ccache --show-stats

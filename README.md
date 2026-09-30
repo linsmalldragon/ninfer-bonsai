@@ -88,13 +88,16 @@ CUDA 13.1 的 NVIDIA 驱动(用最新 GeForce 驱动)。
 ```bash
 git clone https://github.com/iamwavecut/ninfer-all
 cd ninfer-all
-git checkout 2172a5985ad761c2223ee60ab196dbdae70a1aec   # 模型卡基准 commit(2026-09-25)
+# 钉住的 commit 记录在 ninfer-bonsai 仓库的 ninfer-all.sha(CI 也读它,单一事实来源)
+git checkout $(cat /path/to/ninfer-bonsai/ninfer-all.sha)
 
 docker build -f /path/to/ninfer-bonsai/Dockerfile \
   -t ninfer-bonsai2-27b:sm120a-2172a598 .
 ```
 
 - 构建 context 是 **ninfer-all 检出目录**(不是 ninfer-bonsai 目录),Dockerfile 用 `-f` 指定。
+- 本地构建默认 `CMAKE_CUDA_ARCHITECTURES=120a`(ARG 默认值,5090-only);CI 发布镜像时传
+  `86;89;120a`,见下节。
 - 为什么 `sm_120a`:消费级 Blackwell(5090)没有 tcgen05,三值 `t2_g128_fp16` 路由走
   mma.sync 兼容路径;上游 stock Dockerfile 默认 `CMAKE_CUDA_ARCHITECTURES=86` 会拒绝本产物。
 - 基础镜像(nvidia/cuda:13.1.2-devel/runtime,~3.5 GB)走国内 mirror 拉取可能要约 2 小时;
@@ -102,6 +105,56 @@ docker build -f /path/to/ninfer-bonsai/Dockerfile \
   重跑只重做变化部分。
 - 镜像里已处理一个坑:CUDA runtime 镜像自带的 forward-compat `libcuda` 在 GeForce 卡上会让
   所有 CUDA 调用失败(`cudaErrorCompatNotSupportedOnDevice`),构建时已删除。
+
+## GitHub Actions 自动构建并发布到 Docker Hub
+
+仓库自带 `build-and-publish` 工作流(`.github/workflows/build-and-publish.yml`):
+
+- **触发**:push 到 main(仅当 `Dockerfile` / `ninfer-all.sha` / 工作流文件本身变化),或手动
+  Actions → Run workflow(可覆盖 NInfer-all 的 commit)。
+- **流程**:读 `ninfer-all.sha` 的钉住 commit → clone NInfer-all 到该 commit → BuildKit 构建
+  → 推送 `linsmalldragon/ninfer-bonsai:sm86-sm89-sm120a-<sha8>` 与 `:latest`。
+
+**发布的镜像一张支持 RTX 3090 / 4090 / 5090**:CI 传 `CMAKE_CUDA_ARCHITECTURES=86;89;120a`
+(sm_86/sm_89/sm_120a 三个 cubin 打进同一个 fat binary),而本地构建默认仍只编 `120a`。
+
+一次性准备:
+
+- 注册 Docker Hub 账号(免费档即可),命名空间 `linsmalldragon`;
+- 仓库 Settings → Secrets and variables → Actions 设置:
+  - secret `DOCKERHUB_USERNAME` = `linsmalldragon`
+  - secret `DOCKERHUB_TOKEN` = docker.io 的 access token(Account Settings → Security →
+    Access Tokens,勾选 write)
+
+拉取运行(镜像**不含**模型,先从 HuggingFace 下载,见"获取模型"):
+
+```bash
+docker pull linsmalldragon/ninfer-bonsai:latest
+
+# 3090 / 4090(24 GiB):用镜像自带默认(256K 窗口, rk4v4, dflash2)
+docker run -d --name bonsai2-27b --gpus device=0 -p 8080:8080 \
+  -v /path/to/model:/workspace:ro \
+  linsmalldragon/ninfer-bonsai:latest
+
+# 5090(32 GiB):按本仓库 run.sh 的 880K 部署
+docker run -d --name bonsai2-27b --gpus device=0 -p 8080:8080 \
+  -v /path/to/model:/workspace:ro \
+  -e MAX_CONTEXT=901120 -e KV_CAPACITY=901120 \
+  -e EXTRA_ARGS="--rope-yarn --vision --vision-residency overlay --vision-max-merged 12288 --default-max-tokens 32768" \
+  linsmalldragon/ninfer-bonsai:latest
+```
+
+24 GiB 卡(3090/4090)**不要**套用 880K 默认:KV 池(rk4v4,17.5 KiB/token)880K ≈ 15.4 GiB,
+加上模型权重 ~9 GiB 超显存;用默认的 256K 窗口(或按卡显存自定 `MAX_CONTEXT` / `KV_CAPACITY`)。
+需要视觉的加 `-e EXTRA_ARGS="--vision --vision-residency overlay --vision-max-merged 12288"`。
+
+本机(5090 宿主)也可以直接复用 run.sh 只换镜像:`IMAGE=linsmalldragon/ninfer-bonsai:latest ./run.sh`。
+
+升级引擎版本:改 `ninfer-all.sha` 一行并 push,镜像自动重建发布;升级后 `:latest` 与
+带 sha 的 tag 同时更新。
+
+费用提示:公开仓库每月 2000 免费 runner 分钟;4 核 runner 冷构建(无 BuildKit 缓存复用,
+三架构)约 3–5 小时,免费额度下每月约 4–5 次构建,按需触发即可。
 
 ## 运行
 
