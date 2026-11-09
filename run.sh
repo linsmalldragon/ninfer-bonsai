@@ -41,7 +41,7 @@ fi
 # Deployment defaults for this box; each still yields to an exported
 # variable of the same name. KV coding (rk4v4) and drafter (DFlash2, 5
 # drafts) stay at the image defaults.
-MAX_CONTEXT="${MAX_CONTEXT:-901120}"
+MAX_CONTEXT="${MAX_CONTEXT:-256000}"
 KV_CAPACITY="${KV_CAPACITY:-$MAX_CONTEXT}"
 if [ -z "${EXTRA_ARGS:-}" ]; then
   EXTRA_ARGS="--rope-yarn --vision --vision-residency overlay --vision-max-merged 12288 --default-max-tokens 32768 --structured-output"
